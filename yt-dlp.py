@@ -4,6 +4,7 @@ import re
 import threading
 import yt_dlp
 from PyQt5 import uic, QtWidgets
+from queue import Queue
 
 # Função para substituir caracteres inválidos no nome do arquivo
 def sanitize_filename(url):
@@ -13,7 +14,7 @@ def sanitize_filename(url):
     return filename + '.mp4'
 
 # Função para baixar vídeos usando yt-dlp
-def download_video(url, audio_only, video_only):
+def download_video(url, audio_only, video_only, total_videos, index):
     base_dir = "C:\\Users\\abobi\\Videos"
 
     if 'tiktok.com' in url:
@@ -34,37 +35,15 @@ def download_video(url, audio_only, video_only):
     ydl_opts = {
         'outtmpl': filepath,
         'progress_hooks': [progress_hook],
-        'format': 'bestaudio/best' if audio_only else 'bestvideo+bestaudio/best' if video_only else 'best'
+        'format': 'bestaudio' if audio_only else 'bestvideo+bestaudio/best' if video_only else 'best',
+        'verbose': True,
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info_dict = ydl.extract_info(url, download=False)  # Extraí informações sem baixar
-            formats = info_dict.get('formats', []) + [info_dict]  # Adiciona informações de formatos
+            ydl.download([url])
 
-            if not formats:
-                ui.textEdit.append(f"Erro: Nenhum formato disponível para {url}")
-                return
-
-            # Escolha do melhor formato baseado em resolução e qualidade, com proteção contra NoneType
-            best_format = max(
-                (f for f in formats if f.get('height') is not None and f.get('tbr') is not None),
-                key=lambda f: (f.get('height', 0), f.get('tbr', 0)),
-                default=None
-            )
-
-            if not best_format:
-                ui.textEdit.append(f"Erro: Não foi possível determinar o melhor formato para {url}")
-                return
-
-            # Configura o formato e nome do arquivo final
-            ydl_opts['format'] = best_format['format_id']
-            ydl_opts['outtmpl'] = filepath
-
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-
-        ui.textEdit.append(f"Download concluído para: {url}")
+        ui.textEdit.append(f"Downloaded {index} of {total_videos}: {url}")
     except Exception as e:
         ui.textEdit.append(f"Erro ao baixar {url}: {e}")
 
@@ -72,6 +51,27 @@ def download_video(url, audio_only, video_only):
 def progress_hook(d):
     if d['status'] == 'finished':
         ui.textEdit.append(f"Concluído: {d['filename']}")
+
+# Função para lidar com a fila de downloads
+def download_queue_worker():
+    while not download_queue.empty():
+        url, audio_only, video_only = download_queue.get()
+        try:
+            # Extrair informações sobre a playlist ou vídeo único
+            with yt_dlp.YoutubeDL() as ydl:
+                info_dict = ydl.extract_info(url, download=False)
+                if 'entries' in info_dict:  # É uma playlist
+                    total_videos = len(info_dict['entries'])
+                    for index, entry in enumerate(info_dict['entries'], start=1):
+                        video_url = entry.get('webpage_url', None)
+                        if video_url:
+                            download_video(video_url, audio_only, video_only, total_videos, index)
+                else:  # É um vídeo único
+                    download_video(url, audio_only, video_only, 1, 1)
+
+            ui.textEdit.append("All downloads complete.")
+        finally:
+            download_queue.task_done()
 
 # Função para lidar com o botão de download
 def download_button_clicked():
@@ -83,16 +83,25 @@ def download_button_clicked():
         ui.textEdit.append("URL não fornecida.")
         return
 
-    # Rodar o download em uma thread para não travar a interface
-    thread = threading.Thread(target=download_video, args=(url, audio_only, video_only))
-    thread.start()
+    # Adiciona a URL à fila de downloads
+    download_queue.put((url, audio_only, video_only))
+
+    # Inicia uma thread para processar a fila de downloads
+    if not download_thread.is_alive():
+        download_thread.start()
 
 # Carregar a interface
 app = QtWidgets.QApplication([])
-ui = uic.loadUi("G:\\Meu Drive\\felquinhas.py\\yt-dlp\\yt-dlp.ui")
+ui = uic.loadUi("G:\\Meu Drive\\felquinhas.py\\Abobi-Downloader\\yt-dlp.ui")
 
 # Conectar o botão de download à função
 ui.pushButton.clicked.connect(download_button_clicked)
+
+# Criar uma fila para os downloads
+download_queue = Queue()
+
+# Criar uma thread para processar a fila de downloads
+download_thread = threading.Thread(target=download_queue_worker, daemon=True)
 
 # Mostrar a interface
 ui.show()
