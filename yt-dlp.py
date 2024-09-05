@@ -1,108 +1,156 @@
-import sys
-import os
-import re
-import threading
 import yt_dlp
-from PyQt5 import uic, QtWidgets
-from queue import Queue
+import os
 
-# Função para substituir caracteres inválidos no nome do arquivo
-def sanitize_filename(url):
-    # Remove a parte da URL após o vídeo ID e substitui caracteres inválidos
-    filename = re.sub(r'[\/:*?"<>|]', '-', url)
-    # Adiciona a extensão .mp4
-    return filename + '.mp4'
 
-# Função para baixar vídeos usando yt-dlp
-def download_video(url, audio_only, video_only, total_videos, index):
-    base_dir = "C:\\Users\\abobi\\Videos"
+def download_video(url, output_path='C:/Users/abobi/Videos/Youtube'):
+    # Ensure the output path exists
+    os.makedirs(output_path, exist_ok=True)
 
-    if 'tiktok.com' in url:
-        save_dir = os.path.join(base_dir, 'Tiktok')
-    elif 'youtube.com' in url or 'youtu.be' in url:
-        save_dir = os.path.join(base_dir, 'Youtube')
-    else:
-        ui.textEdit.append(f"URL não suportada: {url}")
-        return
-
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
-
-    # Nome do arquivo baseado na URL
-    filename = sanitize_filename(url)
-    filepath = os.path.join(save_dir, filename)
-
+    # Configure yt-dlp options
     ydl_opts = {
-        'outtmpl': filepath,
-        'progress_hooks': [progress_hook],
-        'format': 'bestaudio' if audio_only else 'bestvideo+bestaudio/best' if video_only else 'best',
-        'verbose': True,
+        'format': 'bestvideo[height<=1080][fps<=60]+bestaudio/best',
+        'outtmpl': f'{output_path}/%(title)s.%(ext)s',
+        'merge_output_format': 'mp4',  # Ensure that the output is in MP4 format
+        'noplaylist': True,  # Download only the video, not playlists
+        'progress_hooks': [progress_hook]  # Optional: Add a progress hook
     }
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+    # Download the video
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
 
-        ui.textEdit.append(f"Downloaded {index} of {total_videos}: {url}")
-    except Exception as e:
-        ui.textEdit.append(f"Erro ao baixar {url}: {e}")
 
-# Função de callback para mostrar progresso
 def progress_hook(d):
-    if d['status'] == 'finished':
-        ui.textEdit.append(f"Concluído: {d['filename']}")
+    if d['status'] == 'downloading':
+        print(f"Downloading: {d['_percent_str']} at {d['_speed_str']}")
 
-# Função para lidar com a fila de downloads
-def download_queue_worker():
-    while not download_queue.empty():
-        url, audio_only, video_only = download_queue.get()
+
+if __name__ == "__main__":
+    # Replace 'your_video_url' with the URL of the video you want to download
+    video_url = 'https://youtu.be/RG4qhWr1tA4?si=32m20nxDuUhQ9DSi'
+    download_video(video_url)
+import sys
+import os
+from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt5.QtWidgets import QMessageBox
+import threading
+from queue import Queue
+from yt_dlp import YoutubeDL
+
+# Função para baixar vídeo com as opções de qualidade
+def download_video(url, output_folder, max_resolution='2K'):
+    ydl_opts = {
+        'format': f'bestvideo[height<=1440]+bestaudio/best[height<=1440]',
+        'outtmpl': f'{output_folder}/%(title)s.%(ext)s',
+        'merge_output_format': 'mp4',
+        'postprocessors': [{
+            'key': 'FFmpegVideoConvertor',
+            'preferedformat': 'mp4',
+        }]
+    }
+    
+    with YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
+
+# Worker para rodar os downloads em uma thread separada
+class DownloadWorker(QtCore.QThread):
+    update_progress = QtCore.pyqtSignal(str)
+    
+    def __init__(self, url, output_folder, platform, max_resolution):
+        super().__init__()
+        self.url = url
+        self.output_folder = output_folder
+        self.platform = platform
+        self.max_resolution = max_resolution
+    
+    def run(self):
         try:
-            # Extrair informações sobre a playlist ou vídeo único
-            with yt_dlp.YoutubeDL() as ydl:
-                info_dict = ydl.extract_info(url, download=False)
-                if 'entries' in info_dict:  # É uma playlist
-                    total_videos = len(info_dict['entries'])
-                    for index, entry in enumerate(info_dict['entries'], start=1):
-                        video_url = entry.get('webpage_url', None)
-                        if video_url:
-                            download_video(video_url, audio_only, video_only, total_videos, index)
-                else:  # É um vídeo único
-                    download_video(url, audio_only, video_only, 1, 1)
+            download_video(self.url, self.output_folder, self.max_resolution)
+            self.update_progress.emit(f"Download completed: {self.url}")
+        except Exception as e:
+            self.update_progress.emit(f"Error downloading {self.url}: {str(e)}")
 
-            ui.textEdit.append("All downloads complete.")
-        finally:
-            download_queue.task_done()
+# Classe da Interface Gráfica
+class Ui_MainWindow(QtWidgets.QMainWindow):
+    
+    def __init__(self):
+        super().__init__()
+        self.setupUi()
+        self.queue = Queue()
+        self.downloading = False
 
-# Função para lidar com o botão de download
-def download_button_clicked():
-    url = ui.lineEdit.text()
-    audio_only = ui.checkBox.isChecked()
-    video_only = ui.checkBox_2.isChecked()
+    def setupUi(self):
+        self.setWindowTitle("YouTube & TikTok Downloader")
+        self.setGeometry(100, 100, 600, 400)
+        
+        self.label = QtWidgets.QLabel("Enter URL:", self)
+        self.label.setGeometry(20, 20, 100, 30)
+        
+        self.url_input = QtWidgets.QLineEdit(self)
+        self.url_input.setGeometry(100, 20, 400, 30)
+        
+        self.download_button = QtWidgets.QPushButton("Add to Queue", self)
+        self.download_button.setGeometry(100, 60, 150, 30)
+        self.download_button.clicked.connect(self.add_to_queue)
+        
+        self.textEdit_log = QtWidgets.QTextEdit(self)
+        self.textEdit_log.setGeometry(20, 100, 560, 250)
+        
+        self.show()
 
-    if not url:
-        ui.textEdit.append("URL não fornecida.")
-        return
+    def log_message(self, message):
+        self.textEdit_log.append(message)
+        self.textEdit_log.verticalScrollBar().setValue(self.textEdit_log.verticalScrollBar().maximum())
 
-    # Adiciona a URL à fila de downloads
-    download_queue.put((url, audio_only, video_only))
+    def add_to_queue(self):
+        url = self.url_input.text().strip()
+        if not url:
+            self.show_error("Please enter a valid URL.")
+            return
+        
+        platform = self.detect_platform(url)
+        if platform == "YouTube":
+            output_folder = "YouTube"
+        elif platform == "TikTok":
+            output_folder = "TikTok"
+        else:
+            self.show_error("Unsupported platform.")
+            return
+        
+        os.makedirs(output_folder, exist_ok=True)
+        
+        self.queue.put((url, output_folder, platform))
+        self.log_message(f"Added to queue: {url}")
+        if not self.downloading:
+            self.start_download()
 
-    # Inicia uma thread para processar a fila de downloads
-    if not download_thread.is_alive():
-        download_thread.start()
+    def start_download(self):
+        if not self.queue.empty():
+            self.downloading = True
+            url, output_folder, platform = self.queue.get()
+            worker = DownloadWorker(url, output_folder, platform, '2K')
+            worker.update_progress.connect(self.log_message)
+            worker.finished.connect(self.start_download)
+            worker.start()
+        else:
+            self.downloading = False
 
-# Carregar a interface
-app = QtWidgets.QApplication([])
-ui = uic.loadUi("G:\\Meu Drive\\felquinhas.py\\Abobi-Downloader\\yt-dlp.ui")
+    def detect_platform(self, url):
+        if "youtube.com" in url or "youtu.be" in url:
+            return "YouTube"
+        elif "tiktok.com" in url:
+            return "TikTok"
+        return None
 
-# Conectar o botão de download à função
-ui.pushButton.clicked.connect(download_button_clicked)
+    def show_error(self, message):
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Critical)
+        msg.setText(message)
+        msg.setWindowTitle("Error")
+        msg.exec_()
 
-# Criar uma fila para os downloads
-download_queue = Queue()
-
-# Criar uma thread para processar a fila de downloads
-download_thread = threading.Thread(target=download_queue_worker, daemon=True)
-
-# Mostrar a interface
-ui.show()
-sys.exit(app.exec_())
+# Inicializa o aplicativo
+if __name__ == "__main__":
+    app = QtWidgets.QApplication(sys.argv)
+    main_window = Ui_MainWindow()
+    sys.exit(app.exec_())
